@@ -9,8 +9,8 @@ import logging
 import sys
 import argparse
 import pandas as pd
-import re
 import csv
+from colorama import Fore, Style
 
 def setup_logging():
     """
@@ -48,9 +48,14 @@ def parse_arguments():
     parser.add_argument(
         '-o', '--output',
         type=str,
-        required=True,
+        required=False,
         metavar='OUTPUT_FILE',
         help='Path to the output CSV file'
+    )
+    parser.add_argument(
+        '--check-only',
+        action='store_true',
+        help='Only perform a discrepancy check without generating an output file'
     )
     return parser.parse_args()
 
@@ -86,8 +91,9 @@ def main():
     dina_data = read_personnel_data(args.input_dina, None)
 
     # Find users in RKnet data who do not have a DiNa-Wiki account, checking by email
-    dina_emails = {entry['E-Mail'].lower() for entry in dina_data if 'E-Mail' in entry}
+    dina_emails = {entry['E-Mail'].lower(): entry for entry in dina_data if 'E-Mail' in entry}
     users_without_dina_account = []
+    discrepancies_found = []
 
     for entry in rknet_data:
         email = entry.get('E-Mail-Adresse', '').lower()
@@ -99,23 +105,46 @@ def main():
                 nachname_with_suffix = parts[1]
                 entry['username'] = f"{vorname_initial}.{nachname_with_suffix}"
             users_without_dina_account.append(entry)
+        else:
+            # Check for discrepancies in user data
+            dina_user = dina_emails[email]
+            rknet_fullname = f"{entry['Vorname'].split()[0]} {entry['Nachname']}"
+            dina_fullname = dina_user.get('Voller Name', '')
+            discrepancies = []
+
+            if dina_user['E-Mail'].lower() != entry['E-Mail-Adresse'].lower():
+                discrepancies.append(f"{Fore.YELLOW}E-Mail: DiNa-Wiki({dina_user['E-Mail']}) vs RKnet({entry['E-Mail-Adresse']}){Style.RESET_ALL}")
+            if dina_fullname != rknet_fullname:
+                discrepancies.append(f"{Fore.YELLOW}Voller Name: DiNa-Wiki({dina_fullname}) vs RKnet({rknet_fullname}){Style.RESET_ALL}")
+
+            if discrepancies:
+                logging.warning(f"{Fore.RED}Discrepancy found for user:{Style.RESET_ALL} {rknet_fullname} ({email})")
+                for discrepancy in discrepancies:
+                    logging.warning(discrepancy)
+                discrepancies_found.append(entry)
 
     # Log the result
     logging.info(f'Found {len(users_without_dina_account)} users without a DiNa-Wiki account.')
     for user in users_without_dina_account:
         logging.info(f"User without account: {user['Vorname']} {user['Nachname']} ({user.get('E-Mail-Adresse', 'No Email')}) - Suggested username: {user.get('username', 'No Username')}" )
 
-    # Write the result to a CSV file
-    output_file = args.output
-    with open(output_file, mode='w', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(['Benutzername', 'Voller Name', 'E-Mail', 'Gruppen'])
-        for user in users_without_dina_account:
-            voll_name = f'{user['Vorname']} {user['Nachname']}'
-            email = user.get('E-Mail-Adresse', 'No Email')
-            username = user.get('username', 'No Username')
-            writer.writerow([username, voll_name, email, 'user'])
-    logging.info(f'Output CSV file generated: {output_file}')
+    logging.info(f'Found {len(discrepancies_found)} users with discrepancies in DiNa-Wiki.')
+
+    # If not in check-only mode, write the result to a CSV file
+    if not args.check_only:
+        if not args.output:
+            logging.error('Output file path is required when not running in check-only mode.')
+            sys.exit(1)
+        output_file = args.output
+        with open(output_file, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['Benutzername', 'Voller Name', 'E-Mail', 'Gruppen'])
+            for user in users_without_dina_account:
+                voll_name = f"{user['Vorname']} {user['Nachname']}"
+                email = user.get('E-Mail-Adresse', 'No Email')
+                username = user.get('username', 'No Username')
+                writer.writerow([username, voll_name, email, 'user'])
+        logging.info(f'Output CSV file generated: {output_file}')
 
 if __name__ == "__main__":
     main()
